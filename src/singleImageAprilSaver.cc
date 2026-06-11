@@ -1,4 +1,5 @@
 #include "calib_image_saver/apriltag_frontend/GridCalibrationTargetAprilgrid.hpp"
+#include <algorithm>
 #include <boost/filesystem.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <iomanip>
@@ -6,12 +7,11 @@
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-#include <ros/console.h>
-#include <ros/ros.h>
-#include <sensor_msgs/Image.h>
-#include <sensor_msgs/image_encodings.h>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/image_encodings.hpp>
+#include <sensor_msgs/msg/image.hpp>
 
-ros::Subscriber image_sub;
+rclcpp::Subscription< sensor_msgs::msg::Image >::SharedPtr image_sub;
 
 std::string image_path;
 bool is_use_OpenCV     = false;
@@ -24,8 +24,10 @@ int image_count       = 0;
 bool is_first_run     = true;
 bool is_get_chessbord = false;
 bool is_color         = false;
-ros::Time time_last, time_now;
+rclcpp::Time time_last, time_now;
 int max_freq = 10;
+int display_max_width = 1280;
+int display_max_height = 720;
 cv::Mat image_in, image_show;
 cv::Mat DistributedImage;
 std::vector< std::vector< cv::Point2f > > total_image_points;
@@ -41,8 +43,17 @@ showImage( cv::Mat& image, cv::Mat& _DistributedImage )
     cv::Mat imgROI = _DistributedImage( cv::Rect( image.cols, 0, image.cols, image.rows ) );
     image_show.copyTo( imgROI );
 
+    cv::Mat display_image = _DistributedImage;
+    const double scale = std::min( 1.0,
+                                  std::min( static_cast< double >( display_max_width ) / _DistributedImage.cols,
+                                            static_cast< double >( display_max_height ) / _DistributedImage.rows ) );
+    if ( scale < 1.0 )
+    {
+        cv::resize( _DistributedImage, display_image, cv::Size( ), scale, scale, cv::INTER_AREA );
+    }
+
     cv::namedWindow( "DistributedImage", cv::WINDOW_NORMAL );
-    cv::imshow( "DistributedImage", _DistributedImage );
+    cv::imshow( "DistributedImage", display_image );
     cv::waitKey( 1000 / max_freq );
 }
 
@@ -58,7 +69,7 @@ drawChessBoard( cv::Mat& image_input, cv::Mat& _DistributedImage, const std::vec
     cv::Mat& image = image_input;
 
     if ( image.channels( ) == 1 )
-        cv::cvtColor( image, image, CV_GRAY2RGB );
+        cv::cvtColor( image, image, cv::COLOR_GRAY2RGB );
 
     for ( size_t j = 0; j < imagePoints.size( ); ++j )
     {
@@ -70,7 +81,7 @@ drawChessBoard( cv::Mat& image_input, cv::Mat& _DistributedImage, const std::vec
                     5,
                     green,
                     2,
-                    CV_AA,
+                    cv::LINE_AA,
                     drawShiftBits );
 
         // yellow points is the observed points
@@ -79,13 +90,13 @@ drawChessBoard( cv::Mat& image_input, cv::Mat& _DistributedImage, const std::vec
                     5,
                     yellow,
                     2,
-                    CV_AA,
+                    cv::LINE_AA,
                     drawShiftBits );
     }
 }
 
 void
-callback_0( const sensor_msgs::Image::ConstPtr& img )
+callback_0( const sensor_msgs::msg::Image::ConstSharedPtr img )
 {
     std::string encoding = img->encoding;
     if ( encoding.compare( 0, 4, "mono8" ) == 0 )
@@ -154,16 +165,18 @@ callback_0( const sensor_msgs::Image::ConstPtr& img )
 int
 main( int argc, char** argv )
 {
-    ros::init( argc, argv, "singleImageSaver" );
-    ros::NodeHandle n( "~" );
+    rclcpp::init( argc, argv );
+    auto node = rclcpp::Node::make_shared( "singleImageAprilSaver" );
 
-    n.getParam( "rate", max_freq );
-    n.getParam( "image_path", image_path );
-    n.getParam( "board_width", boardSize.width );
-    n.getParam( "board_height", boardSize.height );
-    n.getParam( "is_use_OpenCV", is_use_OpenCV );
-    n.getParam( "is_show", is_show );
-    n.getParam( "image_name", image_name );
+    max_freq         = node->declare_parameter< int >( "rate", max_freq );
+    display_max_width = node->declare_parameter< int >( "display_max_width", display_max_width );
+    display_max_height = node->declare_parameter< int >( "display_max_height", display_max_height );
+    image_path       = node->declare_parameter< std::string >( "image_path", image_path );
+    boardSize.width  = node->declare_parameter< int >( "board_width", boardSize.width );
+    boardSize.height = node->declare_parameter< int >( "board_height", boardSize.height );
+    is_use_OpenCV    = node->declare_parameter< bool >( "is_use_OpenCV", is_use_OpenCV );
+    is_show          = node->declare_parameter< bool >( "is_show", is_show );
+    image_name       = node->declare_parameter< std::string >( "image_name", image_name );
 
     if ( !boost::filesystem::exists( image_path ) && !boost::filesystem::is_directory( image_path ) )
     {
@@ -177,12 +190,10 @@ main( int argc, char** argv )
         return 0;
     }
 
-    image_sub = n.subscribe< sensor_msgs::Image >( "/image_input", //
-                                                   3,
-                                                   callback_0,
-                                                   ros::TransportHints( ).tcpNoDelay( ) );
+    image_sub = node->create_subscription< sensor_msgs::msg::Image >( "/image_input", 3, callback_0 );
 
-    ros::spin( );
+    rclcpp::spin( node );
+    rclcpp::shutdown( );
 
     cv::imwrite( image_path + "/" + "Distributed.png", DistributedImage );
     std::cout << "#[INFO] Get chessboard iamges: " << image_count << std::endl;

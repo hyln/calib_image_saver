@@ -3,6 +3,7 @@
 
 #include <opencv2/calib3d/calib3d.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+#include <calib_image_saver/opencv_compat.hpp>
 
 //#include "camera_model/chessboard/ChessboardQuad.h"
 //#include "camera_model/chessboard/Spline.h"

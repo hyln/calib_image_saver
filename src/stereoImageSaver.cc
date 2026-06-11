@@ -1,14 +1,16 @@
 #include <cv_bridge/cv_bridge.h>
-#include <ros/console.h>
-#include <ros/ros.h>
-#include <sensor_msgs/Image.h>
-#include <sensor_msgs/image_encodings.h>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/image_encodings.hpp>
+#include <sensor_msgs/msg/image.hpp>
 
+#include <algorithm>
 #include <boost/filesystem.hpp>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/sync_policies/exact_time.h>
 #include <message_filters/time_synchronizer.h>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -16,7 +18,7 @@
 
 #include "../include/calib_image_saver/chessboard/Chessboard.h"
 
-ros::Subscriber image_sub;
+rclcpp::Subscription< sensor_msgs::msg::Image >::SharedPtr image_sub;
 
 std::string image_path;
 bool is_use_OpenCV = false;
@@ -31,8 +33,10 @@ cv::Size image_size;
 int image_count       = 0;
 bool is_first_run     = true;
 bool is_get_chessbord = false;
-ros::Time time_last, time_now;
+rclcpp::Time time_last, time_now;
 int max_freq = 10;
+int display_max_width = 1280;
+int display_max_height = 720;
 cv::Mat image_in_l, image_in_r, image_show_l, image_show_r;
 cv::Mat DistributedImage;
 std::vector< std::vector< cv::Point2f > > total_image_points_left;
@@ -42,12 +46,12 @@ void
 showImage( cv::Mat& image, cv::Mat& image1, cv::Mat& _DistributedImage )
 {
     if ( image.channels( ) == 1 )
-        cv::cvtColor( image, image_show_l, CV_GRAY2RGB );
+        cv::cvtColor( image, image_show_l, cv::COLOR_GRAY2RGB );
     else
         image_show_l = image;
 
     if ( image1.channels( ) == 1 )
-        cv::cvtColor( image1, image_show_r, CV_GRAY2RGB );
+        cv::cvtColor( image1, image_show_r, cv::COLOR_GRAY2RGB );
     else
         image_show_r = image1;
 
@@ -56,8 +60,17 @@ showImage( cv::Mat& image, cv::Mat& image1, cv::Mat& _DistributedImage )
     image_show_l.copyTo( imgROI );
     image_show_r.copyTo( imgROI1 );
 
+    cv::Mat display_image = _DistributedImage;
+    const double scale = std::min( 1.0,
+                                  std::min( static_cast< double >( display_max_width ) / _DistributedImage.cols,
+                                            static_cast< double >( display_max_height ) / _DistributedImage.rows ) );
+    if ( scale < 1.0 )
+    {
+        cv::resize( _DistributedImage, display_image, cv::Size( ), scale, scale, cv::INTER_AREA );
+    }
+
     cv::namedWindow( "DistributedImage", cv::WINDOW_NORMAL );
-    cv::imshow( "DistributedImage", DistributedImage );
+    cv::imshow( "DistributedImage", display_image );
     cv::waitKey( 1000 / max_freq );
 }
 
@@ -74,7 +87,7 @@ drawChessBoard( cv::Mat& image_input, cv::Mat& _DistributedImage, const std::vec
 
     if ( image.channels( ) == 1 )
     {
-        cv::cvtColor( image, image, CV_GRAY2RGB );
+        cv::cvtColor( image, image, cv::COLOR_GRAY2RGB );
     }
 
     for ( size_t j = 0; j < imagePoints.size( ); ++j )
@@ -87,7 +100,7 @@ drawChessBoard( cv::Mat& image_input, cv::Mat& _DistributedImage, const std::vec
                     5,
                     green,
                     2,
-                    CV_AA,
+                    cv::LINE_AA,
                     drawShiftBits );
 
         // yellow points is the observed points
@@ -96,7 +109,7 @@ drawChessBoard( cv::Mat& image_input, cv::Mat& _DistributedImage, const std::vec
                     5,
                     yellow,
                     2,
-                    CV_AA,
+                    cv::LINE_AA,
                     drawShiftBits );
     }
 
@@ -119,8 +132,8 @@ drawChessBoard( cv::Mat& image_input, cv::Mat& _DistributedImage, const std::vec
 }
 
 void
-imageProcessCallback( const sensor_msgs::ImageConstPtr& left_image_msg,
-                      const sensor_msgs::ImageConstPtr& right_image_msg )
+imageProcessCallback( const sensor_msgs::msg::Image::ConstSharedPtr left_image_msg,
+                      const sensor_msgs::msg::Image::ConstSharedPtr right_image_msg )
 {
     image_in_l = cv_bridge::toCvCopy( left_image_msg, "mono8" )->image;
     image_in_r = cv_bridge::toCvCopy( right_image_msg, "mono8" )->image;
@@ -140,7 +153,7 @@ imageProcessCallback( const sensor_msgs::ImageConstPtr& left_image_msg,
         is_first_run = false;
 
         if ( is_show )
-            cv::namedWindow( "DistributedImage", CV_WINDOW_NORMAL );
+            cv::namedWindow( "DistributedImage", cv::WINDOW_NORMAL );
     }
 
     if ( is_show )
@@ -213,19 +226,21 @@ process( )
 int
 main( int argc, char** argv )
 {
-    ros::init( argc, argv, "stereoImageSaver" );
-    ros::NodeHandle n( "~" );
+    rclcpp::init( argc, argv );
+    auto node = rclcpp::Node::make_shared( "stereoImageSaver" );
 
-    n.getParam( "rate", max_freq );
-    n.getParam( "image_path", image_path );
-    n.getParam( "board_width", boardSize.width );
-    n.getParam( "board_height", boardSize.height );
-    n.getParam( "is_use_OpenCV", is_use_OpenCV );
-    n.getParam( "is_show", is_show );
-    n.getParam( "is_save_data", is_save_data );
-    n.getParam( "data_path", data_path );
-    n.getParam( "image_name_left", image_name_left );
-    n.getParam( "image_name_right", image_name_right );
+    max_freq         = node->declare_parameter< int >( "rate", max_freq );
+    display_max_width = node->declare_parameter< int >( "display_max_width", display_max_width );
+    display_max_height = node->declare_parameter< int >( "display_max_height", display_max_height );
+    image_path       = node->declare_parameter< std::string >( "image_path", image_path );
+    boardSize.width  = node->declare_parameter< int >( "board_width", boardSize.width );
+    boardSize.height = node->declare_parameter< int >( "board_height", boardSize.height );
+    is_use_OpenCV    = node->declare_parameter< bool >( "is_use_OpenCV", is_use_OpenCV );
+    is_show          = node->declare_parameter< bool >( "is_show", is_show );
+    is_save_data     = node->declare_parameter< bool >( "is_save_data", is_save_data );
+    data_path        = node->declare_parameter< std::string >( "data_path", data_path );
+    image_name_left  = node->declare_parameter< std::string >( "image_name_left", image_name_left );
+    image_name_right = node->declare_parameter< std::string >( "image_name_right", image_name_right );
 
     if ( !boost::filesystem::exists( image_path ) && !boost::filesystem::is_directory( image_path ) )
     {
@@ -248,24 +263,24 @@ main( int argc, char** argv )
         data_file_name = data_path + "/data.ymal";
     }
 
-    message_filters::Subscriber< sensor_msgs::Image > sub_imgL( n, "/left_image", 1 );
-    message_filters::Subscriber< sensor_msgs::Image > sub_imgR( n, "/right_image", 1 );
+    message_filters::Subscriber< sensor_msgs::msg::Image > sub_imgL( node.get( ), "/left_image" );
+    message_filters::Subscriber< sensor_msgs::msg::Image > sub_imgR( node.get( ), "/right_image" );
 
-    typedef message_filters::sync_policies::ExactTime< sensor_msgs::Image, sensor_msgs::Image > SyncPolicy;
-    // typedef message_filters::sync_policies::ApproximateTime< sensor_msgs::Image,
-    // sensor_msgs::Image > SyncPolicy;
+    typedef message_filters::sync_policies::ExactTime< sensor_msgs::msg::Image, sensor_msgs::msg::Image > SyncPolicy;
+    // typedef message_filters::sync_policies::ApproximateTime< sensor_msgs::msg::Image,
+    // sensor_msgs::msg::Image > SyncPolicy;
     message_filters::Synchronizer< SyncPolicy > sync( SyncPolicy( 50 ), sub_imgL, sub_imgR );
 
-    sync.registerCallback( boost::bind( &imageProcessCallback, _1, _2 ) );
+    sync.registerCallback( std::bind( &imageProcessCallback, std::placeholders::_1, std::placeholders::_2 ) );
 
-    ros::Rate loop( max_freq );
-    while ( ros::ok( ) )
+    rclcpp::Rate loop( max_freq );
+    while ( rclcpp::ok( ) )
     {
         process( );
-        ros::spinOnce( );
+        rclcpp::spin_some( node );
         loop.sleep( );
     }
-    //    ros::spin( );
+    rclcpp::shutdown( );
 
     cv::imwrite( image_path + "/" + "Distributed.jpg", DistributedImage );
     std::cout << "#[INFO] Get chessboard iamges: " << image_count << std::endl;
