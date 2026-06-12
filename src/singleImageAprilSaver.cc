@@ -1,7 +1,7 @@
 #include "calib_image_saver/apriltag_frontend/GridCalibrationTargetAprilgrid.hpp"
 #include <algorithm>
 #include <boost/filesystem.hpp>
-#include <cv_bridge/cv_bridge.h>
+#include <cv_bridge/cv_bridge.hpp>
 #include <iomanip>
 #include <iostream>
 #include <opencv2/core/core.hpp>
